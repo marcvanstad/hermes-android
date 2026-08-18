@@ -33,6 +33,14 @@ object RelayClient {
     private const val MAX_BACKOFF_MS = 30_000L
     private const val MAX_RETRIES = 5
 
+    // --- Termux revival watchdog ---
+    // When the relay is unreachable past these thresholds, fire the
+    // Termux RUN_COMMAND intent to restart the whole stack (start-zee.sh).
+    private const val WATCHDOG_FAILURES_TO_TRIGGER = 3
+    private const val WATCHDOG_COOLDOWN_MS = 600_000L  // 10 min
+    private const val KEY_FAILURES = "watchdog_failures"
+    private const val KEY_LAST_FIRE = "watchdog_last_fire_ms"
+
     private val gson = Gson()
     private val client = OkHttpClient.Builder()
         .pingInterval(java.time.Duration.ofSeconds(20))
@@ -42,6 +50,7 @@ object RelayClient {
     private var scope: CoroutineScope? = null
     private var reconnectJob: Job? = null
     private var prefs: SharedPreferences? = null
+    private var appContext: Context? = null
     private val reconnectPolicy = ReconnectPolicy(maxRetries = MAX_RETRIES, maxBackoffMs = MAX_BACKOFF_MS)
 
     /** True between scheduling a reconnect and that attempt firing. Guards against
@@ -77,6 +86,7 @@ object RelayClient {
 
     fun init(context: Context) {
         prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        appContext = context.applicationContext
     }
 
     // Shares the monitor with scheduleReconnect/beginReconnectAttempt: these run
@@ -146,6 +156,8 @@ object RelayClient {
                 }
                 Log.i(TAG, "WebSocket connected to ${buildWsUrl(serverUrl)}")
                 isConnected = true
+                // success resets the revival watchdog
+                prefs?.edit()?.putInt(KEY_FAILURES, 0)?.apply()
                 // NOT a policy reset: the budget is only refilled once this
                 // session proves stable (see endSession), so a relay that
                 // accepts and instantly drops us can't retry forever.
@@ -226,6 +238,7 @@ object RelayClient {
             webSocket?.cancel()
             webSocket = null
             notifyStatus(false, "Failed to connect after ${reconnectPolicy.limit} attempts. Tap Connect to retry.")
+            maybeFireTermuxRevival()
             return
         }
 
@@ -272,6 +285,47 @@ object RelayClient {
         if (startedNs == 0L) return
         sessionStartedNs = 0L
         reconnectPolicy.onSessionEnded((System.nanoTime() - startedNs) / 1_000_000L)
+    }
+
+    /**
+     * Termux revival watchdog: after repeated relay connection failures
+     * (Termux stack likely dead), fire the RUN_COMMAND intent to restart
+     * the whole stack via start-zee.sh. Cooldown prevents loops.
+     */
+    private fun maybeFireTermuxRevival() {
+        val p = prefs ?: return
+        val failures = p.getInt(KEY_FAILURES, 0) + 1
+        val lastFire = p.getLong(KEY_LAST_FIRE, 0L)
+        val now = System.currentTimeMillis()
+        p.edit().putInt(KEY_FAILURES, failures).apply()
+        if (failures < WATCHDOG_FAILURES_TO_TRIGGER) {
+            Log.i(TAG, "Revival watchdog: $failures/$WATCHDOG_FAILURES_TO_TRIGGER failures")
+            return
+        }
+        if (now - lastFire < WATCHDOG_COOLDOWN_MS) {
+            Log.i(TAG, "Revival watchdog: in cooldown, skipping")
+            return
+        }
+        p.edit().putInt(KEY_FAILURES, 0).putLong(KEY_LAST_FIRE, now).apply()
+        fireTermuxRestart()
+    }
+
+    private fun fireTermuxRestart() {
+        val ctx = appContext ?: return
+        try {
+            val intent = android.content.Intent("com.termux.RUN_COMMAND").apply {
+                setClassName("com.termux", "com.termux.app.RunCommandService")
+                putExtra("com.termux.RUN_COMMAND_PATH",
+                    "/data/data/com.termux/files/home/.termux/boot/start-zee.sh")
+                putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
+                putExtra("com.termux.RUN_COMMAND_SESSION_ACTION", 0)
+            }
+            ctx.startService(intent)
+            Log.i(TAG, "Termux revival: RUN_COMMAND fired (start-zee.sh)")
+            notifyStatus(false, "Stack unreachable — firing Termux revival…")
+        } catch (e: Exception) {
+            Log.e(TAG, "Termux revival intent failed", e)
+        }
     }
 
     private fun buildWsUrl(serverUrl: String): String {
