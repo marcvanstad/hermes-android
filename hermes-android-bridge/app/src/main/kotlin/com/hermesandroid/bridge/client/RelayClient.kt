@@ -40,6 +40,7 @@ object RelayClient {
     private const val WATCHDOG_COOLDOWN_MS = 600_000L  // 10 min
     private const val KEY_FAILURES = "watchdog_failures"
     private const val KEY_LAST_FIRE = "watchdog_last_fire_ms"
+    private const val KEY_REVIVAL_ENABLED = "termux_revival_enabled"
 
     private val gson = Gson()
     private val client = OkHttpClient.Builder()
@@ -294,6 +295,11 @@ object RelayClient {
      */
     private fun maybeFireTermuxRevival() {
         val p = prefs ?: return
+        // Opt-in gate: the Termux auto-revival must be explicitly enabled
+        // (silent auto-execution of a script widens the attack surface).
+        if (!p.getBoolean(KEY_REVIVAL_ENABLED, false)) {
+            return
+        }
         val failures = p.getInt(KEY_FAILURES, 0) + 1
         val lastFire = p.getLong(KEY_LAST_FIRE, 0L)
         val now = System.currentTimeMillis()
@@ -323,8 +329,27 @@ object RelayClient {
             ctx.startService(intent)
             Log.i(TAG, "Termux revival: RUN_COMMAND fired (start-zee.sh)")
             notifyStatus(false, "Stack unreachable — firing Termux revival…")
+            // The watchdog fired but the app itself must keep trying to
+            // reconnect: without this the relay stays dark even after a
+            // successful revival (review point: "fires but never reconnects").
+            reconnectDelayed()
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Termux revival BLOCKED: RUN_COMMAND permission missing", e)
+            notifyStatus(false, "Revival blocked — allow Termux RUN_COMMAND (Termux > Allow external apps)")
         } catch (e: Exception) {
             Log.e(TAG, "Termux revival intent failed", e)
+            notifyStatus(false, "Revival failed: ${e.message?.take(80) ?: "unknown error"}")
+        }
+    }
+
+    private fun reconnectDelayed() {
+        try {
+            scope?.launch {
+                kotlinx.coroutines.delay(30_000L)  // 30s later, bounded by the same cooldown
+                connect()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Delayed reconnect not scheduled: $e")
         }
     }
 
