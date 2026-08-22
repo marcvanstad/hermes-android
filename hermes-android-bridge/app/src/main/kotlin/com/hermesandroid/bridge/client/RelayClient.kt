@@ -344,9 +344,15 @@ object RelayClient {
 
     private fun reconnectDelayed() {
         try {
+            val url = prefs?.getString(KEY_SERVER_URL, null)
+            val code = prefs?.getString(KEY_PAIRING_CODE, null)
+            if (url.isNullOrBlank() || code.isNullOrBlank()) {
+                Log.w(TAG, "Delayed reconnect skipped: no saved server/code")
+                return
+            }
             scope?.launch {
                 kotlinx.coroutines.delay(30_000L)  // 30s later, bounded by the same cooldown
-                connect()
+                connect(url, code)
             }
         } catch (e: Exception) {
             Log.w(TAG, "Delayed reconnect not scheduled: $e")
