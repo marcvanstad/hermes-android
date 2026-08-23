@@ -38,6 +38,7 @@ object RelayClient {
     // Termux RUN_COMMAND intent to restart the whole stack (start-zee.sh).
     private const val WATCHDOG_FAILURES_TO_TRIGGER = 3
     private const val WATCHDOG_COOLDOWN_MS = 600_000L  // 10 min
+    private val revivalPolicy = RevivalPolicy(WATCHDOG_FAILURES_TO_TRIGGER, WATCHDOG_COOLDOWN_MS)
     private const val KEY_FAILURES = "watchdog_failures"
     private const val KEY_LAST_FIRE = "watchdog_last_fire_ms"
     private const val KEY_REVIVAL_ENABLED = "termux_revival_enabled"
@@ -295,25 +296,22 @@ object RelayClient {
      */
     private fun maybeFireTermuxRevival() {
         val p = prefs ?: return
-        // Opt-in gate: the Termux auto-revival must be explicitly enabled
-        // (silent auto-execution of a script widens the attack surface).
-        if (!p.getBoolean(KEY_REVIVAL_ENABLED, false)) {
-            return
-        }
-        val failures = p.getInt(KEY_FAILURES, 0) + 1
+        val enabled = p.getBoolean(KEY_REVIVAL_ENABLED, false)
+        val failures = p.getInt(KEY_FAILURES, 0)
         val lastFire = p.getLong(KEY_LAST_FIRE, 0L)
         val now = System.currentTimeMillis()
-        p.edit().putInt(KEY_FAILURES, failures).apply()
-        if (failures < WATCHDOG_FAILURES_TO_TRIGGER) {
-            Log.i(TAG, "Revival watchdog: $failures/$WATCHDOG_FAILURES_TO_TRIGGER failures")
-            return
+        when (val d = revivalPolicy.onFailure(enabled, failures, lastFire, now)) {
+            is RevivalPolicy.Decision.Wait -> {
+                p.edit().putInt(KEY_FAILURES, d.failures).apply()
+                if (d.failures > failures) {
+                    Log.i(TAG, "Revival watchdog: ${d.failures}/$WATCHDOG_FAILURES_TO_TRIGGER failures")
+                }
+            }
+            is RevivalPolicy.Decision.Fire -> {
+                p.edit().putInt(KEY_FAILURES, 0).putLong(KEY_LAST_FIRE, now).apply()
+                fireTermuxRestart()
+            }
         }
-        if (now - lastFire < WATCHDOG_COOLDOWN_MS) {
-            Log.i(TAG, "Revival watchdog: in cooldown, skipping")
-            return
-        }
-        p.edit().putInt(KEY_FAILURES, 0).putLong(KEY_LAST_FIRE, now).apply()
-        fireTermuxRestart()
     }
 
     private fun fireTermuxRestart() {
