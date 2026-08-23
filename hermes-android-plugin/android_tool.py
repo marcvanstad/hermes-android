@@ -27,13 +27,52 @@ from urllib.parse import quote
 # by setting ANDROID_BRIDGE_URL to the phone's IP.
 
 
+_ENV_FILE_CACHE: Optional[dict] = None
+
+
+def _env_file_vars() -> dict:
+    """Parse ~/.hermes/.env once, cached.
+
+    The gateway process does not always export every .env var into os.environ
+    (it loads .env for its own config but the plugin runs in a context where
+    ANDROID_BRIDGE_TOKEN may be missing).  Fall back to reading the file
+    directly so auth works regardless of how the process was started.
+    """
+    global _ENV_FILE_CACHE
+    if _ENV_FILE_CACHE is not None:
+        return _ENV_FILE_CACHE
+    _ENV_FILE_CACHE = {}
+    env_path = os.path.join(
+        os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")), ".env"
+    )
+    try:
+        with open(env_path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                _ENV_FILE_CACHE[key.strip()] = value.strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return _ENV_FILE_CACHE
+
+
+def _env(key: str) -> Optional[str]:
+    """os.environ first, then ~/.hermes/.env as a fallback."""
+    val = os.getenv(key)
+    if val:
+        return val
+    return _env_file_vars().get(key)
+
+
 def _bridge_url() -> str:
     """URL of the relay (default) or direct phone connection."""
-    return os.getenv("ANDROID_BRIDGE_URL", "http://localhost:8766")
+    return _env("ANDROID_BRIDGE_URL") or "http://localhost:8766"
 
 
 def _bridge_token() -> Optional[str]:
-    return os.getenv("ANDROID_BRIDGE_TOKEN")
+    return _env("ANDROID_BRIDGE_TOKEN")
 
 
 def _relay_port() -> int:
@@ -211,7 +250,8 @@ def android_press_key(key: str) -> str:
     """
     Press a key. Supported keys:
       back, home, recents, power, notifications,
-      quick_settings, lock_screen, take_screenshot
+      quick_settings, lock_screen, take_screenshot, wake
+    (wake = turn the screen on; power = long-press power menu)
     """
     try:
         data = _post("/press_key", {"key": key})
@@ -677,6 +717,15 @@ def android_mic_fetch(remote_path: str = "") -> str:
         if len(prefix) < 12 or prefix[:4] != b"RIFF" or prefix[8:12] != b"WAVE":
             raise IOError("Downloaded microphone recording is not a WAV file")
         return f"Microphone recording fetched ({written} bytes)\nMEDIA:{temp_path}"
+    except requests.exceptions.RequestException:
+        # requests exception text embeds the bridge host:port; tool responses
+        # must not expose device connection details (AGENTS.md convention).
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+        return json.dumps({"error": "Could not download microphone recording from the bridge"})
     except Exception as e:
         if temp_path:
             try:
@@ -1064,6 +1113,7 @@ _SCHEMAS = {
                         "quick_settings",
                         "lock_screen",
                         "take_screenshot",
+                        "wake",
                     ],
                 }
             },
@@ -1072,7 +1122,7 @@ _SCHEMAS = {
     },
     "android_screenshot": {
         "name": "android_screenshot",
-        "description": "Take a screenshot of the current Android screen. Returns base64 PNG. Use when the accessibility tree is missing context or the screen uses canvas/game rendering.",
+        "description": "Take a screenshot of the current Android screen. Returns base64 PNG. Do NOT use this to find UI elements — call android_read_screen or android_find_nodes first to get exact element text and node IDs. Use screenshots only to show the user the screen, verify visual layout, or when the screen uses canvas/game rendering that the accessibility tree cannot read.",
         "parameters": {"type": "object", "properties": {}, "required": []},
     },
     "android_scroll": {

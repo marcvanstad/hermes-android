@@ -379,6 +379,47 @@ class TestSetup:
         assert "localhost" in os.environ.get("ANDROID_BRIDGE_URL", "")
 
 
+class TestEnvFileFallback:
+    """The gateway process may lack ANDROID_* vars in os.environ even though
+    they exist in ~/.hermes/.env.  _bridge_token/_bridge_url must fall back to
+    reading the .env file so the relay still authenticates."""
+
+    def test_token_from_env_file_when_os_environ_empty(self, monkeypatch, tmp_path):
+        from tools import android_tool
+
+        monkeypatch.delenv("ANDROID_BRIDGE_TOKEN", raising=False)
+        monkeypatch.delenv("ANDROID_BRIDGE_URL", raising=False)
+        monkeypatch.setattr(android_tool, "_ENV_FILE_CACHE", None)
+
+        env_file = tmp_path / ".env"
+        env_file.write_text("ANDROID_BRIDGE_TOKEN=SECRET123\nANDROID_BRIDGE_URL=http://1.2.3.4:8766\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        assert android_tool._bridge_token() == "SECRET123"
+        assert android_tool._bridge_url() == "http://1.2.3.4:8766"
+
+    def test_os_environ_wins_over_env_file(self, monkeypatch, tmp_path):
+        from tools import android_tool
+
+        monkeypatch.setenv("ANDROID_BRIDGE_TOKEN", "FROM_ENV")
+        monkeypatch.setattr(android_tool, "_ENV_FILE_CACHE", None)
+        env_file = tmp_path / ".env"
+        env_file.write_text("ANDROID_BRIDGE_TOKEN=FROM_FILE\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        assert android_tool._bridge_token() == "FROM_ENV"
+
+    def test_missing_env_file_returns_none(self, monkeypatch, tmp_path):
+        from tools import android_tool
+
+        monkeypatch.delenv("ANDROID_BRIDGE_TOKEN", raising=False)
+        monkeypatch.setattr(android_tool, "_ENV_FILE_CACHE", None)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "nonexistent"))
+
+        assert android_tool._bridge_token() is None
+        assert android_tool._bridge_url() == "http://localhost:8766"
+
+
 class TestClipboardRead:
     @responses.activate
     def test_clipboard_read(self, bridge_url):
@@ -1371,3 +1412,30 @@ class TestPinch:
         )
         result = json.loads(android_pinch(0, 0))
         assert "error" in result
+
+
+class TestMicFetchErrorRedaction:
+    """#99: requests exception text embeds the bridge host:port, which tool
+    responses must not expose (AGENTS.md convention)."""
+
+    @responses.activate
+    def test_connection_error_does_not_leak_bridge_url(self, monkeypatch):
+        import requests
+
+        leaked_url = "http://192.168.7.42:8766"
+        monkeypatch.setenv("ANDROID_BRIDGE_URL", leaked_url)
+        responses.add(
+            responses.GET,
+            f"{leaked_url}/mic_file",
+            body=requests.exceptions.ConnectionError(
+                "HTTPConnectionPool(host='192.168.7.42', port=8766): "
+                "Max retries exceeded with url: /mic_file"
+            ),
+        )
+
+        result = json.loads(android_mic_fetch())
+
+        assert "error" in result
+        assert "192.168.7.42" not in result["error"]
+        assert "8766" not in result["error"]
+        assert result["error"] == "Could not download microphone recording from the bridge"
