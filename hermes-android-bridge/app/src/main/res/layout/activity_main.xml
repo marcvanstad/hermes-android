@@ -315,7 +315,7 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="Zee Offline (manual — drives)"
+                android:text="Offline Mode (full)"
                 android:textSize="13sp"
                 android:textColor="#CCCCCC"
                 android:fontFamily="monospace" />

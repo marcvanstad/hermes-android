@@ -5,10 +5,10 @@ import android.content.Intent
 import android.util.Log
 
 /**
- * Zee Offline manual toggle — fires the Lighter Zee ritual via RUN_COMMAND
+ * Offline Mode toggle — fires the Lighter Zee ritual via RUN_COMMAND
  * and sets/clears the manual marker so the auto-watchdog backs off while
- * the user is driving through dead zones (P9: the "one tap before you
- * leave" flow).
+ * the user is in a known offline stretch (long drive, airplane mode, rural
+ * area). The full-offline switch, not a drive-specific one.
  */
 object OfflineToggler {
 
@@ -17,12 +17,12 @@ object OfflineToggler {
     private const val RITUAL = "/data/data/com.termux/files/home/.hermes/scripts/zee_offline_ritual.py"
     private const val MANUAL_MARKER = "/data/data/com.termux/files/home/.hermes/state/zee_offline_manual.txt"
 
-    /** mode: "on" or "off" */
+    /** mode: "on" or "off" — the ritual owns the manual marker (atomic) */
     fun fire(ctx: Context, mode: String) {
         val cmd = if (mode == "on") {
-            "$PYTHON $RITUAL on && touch $MANUAL_MARKER"
+            "$PYTHON $RITUAL on"
         } else {
-            "$PYTHON $RITUAL off && rm -f $MANUAL_MARKER"
+            "$PYTHON $RITUAL off"
         }
         try {
             val intent = Intent("com.termux.RUN_COMMAND").apply {

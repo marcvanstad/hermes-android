@@ -175,7 +175,7 @@ class MainActivity : Activity() {
             ).show()
         }
 
-        // Manual Zee Offline mode — the drive-through-dead-zones toggle.
+        // Manual Zee Offline mode — the FULL offline-stretch toggle (not drive-specific).
         // ON: fires the Lighter Zee ritual + sets the manual marker so the
         // auto-watchdog backs off. OFF: parks it + clears the marker.
         switchOffline.setOnCheckedChangeListener { _, isChecked ->
@@ -184,7 +184,7 @@ class MainActivity : Activity() {
             OfflineToggler.fire(this, if (isChecked) "on" else "off")
             Toast.makeText(
                 this,
-                if (isChecked) "Zee Offline mode ON (manual)" else "Zee Offline mode OFF",
+                if (isChecked) "Offline Mode ON" else "Offline Mode OFF",
                 Toast.LENGTH_SHORT
             ).show()
         }
