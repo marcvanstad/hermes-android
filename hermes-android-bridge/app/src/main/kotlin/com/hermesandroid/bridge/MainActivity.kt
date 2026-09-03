@@ -40,7 +40,6 @@ class MainActivity : Activity() {
     private lateinit var switchOverlay: Switch
     private lateinit var switchScreenRecord: Switch
     private lateinit var switchRevival: Switch
-    private lateinit var switchOffline: Switch
     private lateinit var tvPairingCode: TextView
     private lateinit var btnRegenerate: Button
     private lateinit var etServerUrl: EditText
@@ -66,7 +65,6 @@ class MainActivity : Activity() {
         switchOverlay = findViewById(R.id.switchOverlay)
         switchScreenRecord = findViewById(R.id.switchScreenRecord)
         switchRevival = findViewById(R.id.switchRevival)
-        switchOffline = findViewById(R.id.switchOffline)
         tvPairingCode = findViewById(R.id.tvPairingCode)
         btnRegenerate = findViewById(R.id.btnRegenerate)
         etServerUrl = findViewById(R.id.etServerUrl)
@@ -175,19 +173,6 @@ class MainActivity : Activity() {
             ).show()
         }
 
-        // Manual Zee Offline mode — the FULL offline-stretch toggle (not drive-specific).
-        // ON: fires the Lighter Zee ritual + sets the manual marker so the
-        // auto-watchdog backs off. OFF: parks it + clears the marker.
-        switchOffline.setOnCheckedChangeListener { _, isChecked ->
-            getSharedPreferences("hermes_bridge_prefs", MODE_PRIVATE)
-                .edit().putBoolean("zee_offline_manual", isChecked).apply()
-            OfflineToggler.fire(this, if (isChecked) "on" else "off")
-            Toast.makeText(
-                this,
-                if (isChecked) "Offline Mode ON" else "Offline Mode OFF",
-                Toast.LENGTH_SHORT
-            ).show()
-        }
     }
 
     private fun updatePermissionSwitches() {
@@ -195,7 +180,6 @@ class MainActivity : Activity() {
         switchOverlay.setOnCheckedChangeListener(null)
         switchScreenRecord.setOnCheckedChangeListener(null)
         switchRevival.setOnCheckedChangeListener(null)
-        switchOffline.setOnCheckedChangeListener(null)
 
         switchAccessibility.isChecked = BridgeAccessibilityService.instance != null
         switchOverlay.isChecked = Settings.canDrawOverlays(this)
@@ -203,9 +187,6 @@ class MainActivity : Activity() {
         switchRevival.isChecked =
             getSharedPreferences("hermes_bridge_prefs", MODE_PRIVATE)
                 .getBoolean("termux_revival_enabled", false)
-        switchOffline.isChecked =
-            getSharedPreferences("hermes_bridge_prefs", MODE_PRIVATE)
-                .getBoolean("zee_offline_manual", false)
 
         setupPermissions()
     }
