@@ -22,6 +22,22 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Stable signing key: a fresh random debug key per CI run used to force a
+      # full uninstall/reinstall + re-pair on every update (the 0.2 -> 0.4 and
+      # 0.4.2 -> 0.4.3 pain). With a restored keystore the signature is stable
+      # and future builds install over the old APK in place.
+      - name: Restore stable debug keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.HERMES_DEBUG_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            mkdir -p "$HOME/.android"
+            echo "$KEYSTORE_B64" | base64 -d > "$HOME/.android/debug.keystore"
+            echo "stable debug keystore restored"
+          else
+            echo "no HERMES_DEBUG_KEYSTORE_B64 secret — CI will use a fresh debug key"
+          fi
+
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:

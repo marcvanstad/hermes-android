@@ -42,6 +42,9 @@ object RelayClient {
     private const val KEY_FAILURES = "watchdog_failures"
     private const val KEY_LAST_FIRE = "watchdog_last_fire_ms"
     private const val KEY_REVIVAL_ENABLED = "termux_revival_enabled"
+    /** Quiet gap between slow retries once the fast budget is spent on a relay
+     *  that is DOWN (never answered) rather than one that rejected us. */
+    private const val SLOW_RETRY_MS = 20_000L  // 20 s
 
     private val gson = Gson()
     private val client = OkHttpClient.Builder()
@@ -59,6 +62,13 @@ object RelayClient {
      *  onClosed + onFailure both scheduling for the same dead connection. */
     @Volatile
     private var reconnectPending: Boolean = false
+
+    /** True when the last failure had no HTTP response — the relay never
+     *  answered (down/restarting) rather than rejecting us. A down relay may
+     *  come back at any moment, so the client keeps slow-retrying; a rejection
+     *  (wrong pairing code, auth flap) is what needs a human instead. */
+    @Volatile
+    private var lastFailureWasConnectivity: Boolean = false
 
     /** Bumped per connect attempt; callbacks from superseded sockets are ignored. */
     @Volatile
@@ -158,6 +168,7 @@ object RelayClient {
                 }
                 Log.i(TAG, "WebSocket connected to ${buildWsUrl(serverUrl)}")
                 isConnected = true
+                lastFailureWasConnectivity = false
                 // success resets the revival watchdog
                 prefs?.edit()?.putInt(KEY_FAILURES, 0)?.apply()
                 // NOT a policy reset: the budget is only refilled once this
@@ -187,6 +198,9 @@ object RelayClient {
                 if (myGeneration != generation) return
                 Log.i(TAG, "WebSocket closed: $code $reason")
                 isConnected = false
+                // The server answered and accepted the socket before closing —
+                // that is a rejection/close from a LIVE relay, not a down one.
+                lastFailureWasConnectivity = false
                 endSession()
                 notifyStatus(false, "Closed: code=$code $reason")
                 scheduleReconnect()
@@ -200,6 +214,9 @@ object RelayClient {
                 isConnected = false
                 endSession()
                 notifyStatus(false, errorDetail)
+                // No HTTP response means the relay never answered: it is down or
+                // restarting, not rejecting us — the slow-retry path applies.
+                lastFailureWasConnectivity = response == null
                 scheduleReconnect()
             }
         })
@@ -226,8 +243,15 @@ object RelayClient {
 
         // Each failed attempt fires onFailure/onClosed, which lands back here.
         // Bail out once the shared attempt budget is spent — otherwise an
-        // unreachable address reconnects forever.
+        // unreachable address reconnects forever. EXCEPT: when the relay is
+        // DOWN (never answered) rather than rejecting us, it may simply be
+        // restarting — a rebind can outlast the fast budget (2026-09-09: relay
+        // took ~55s to come back, budget was ~31s), and going fully passive
+        // left the bridge dead until someone opened the app. So a down relay
+        // drops into a slow retry loop instead; a live relay that rejected us
+        // (wrong code, auth flap) still stops for a human.
         if (reconnectPolicy.isExhausted) {
+            val relayWasDown = lastFailureWasConnectivity
             shouldReconnect = false
             reconnectPending = false
             // Retire the dead socket's listener too, otherwise a late callback
@@ -239,6 +263,24 @@ object RelayClient {
             sessionStartedNs = 0L
             webSocket?.cancel()
             webSocket = null
+
+            if (relayWasDown) {
+                val slowUrl = url
+                val slowCode = code
+                shouldReconnect = true
+                reconnectJob = activeScope.launch {
+                    Log.i(TAG, "Relay unreachable — slow retry in ${SLOW_RETRY_MS}ms")
+                    notifyStatus(false, "Relay unreachable — retrying…")
+                    delay(SLOW_RETRY_MS)
+                    if (shouldReconnect) {
+                        // connect() resets the budget: a fresh fast burst, then
+                        // back to this slow loop if the relay is still down.
+                        connect(slowUrl, slowCode)
+                    }
+                }
+                return
+            }
+
             notifyStatus(false, "Failed to connect after ${reconnectPolicy.limit} attempts. Tap Connect to retry.")
             maybeFireTermuxRevival()
             return
