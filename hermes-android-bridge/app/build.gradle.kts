@@ -11,8 +11,22 @@ android {
         applicationId = "com.hermesandroid.bridge"
         minSdk = 26
         targetSdk = 34
-        versionCode = 6
-        versionName = "0.4.4"
+        versionCode = 7
+        versionName = "0.4.5"
+    }
+
+    signingConfigs {
+        // Explicit debug key. CI restores the stable keystore to
+        // ~/.android/debug.keystore from the HERMES_DEBUG_KEYSTORE_B64 secret so
+        // every build shares one signature and updates install in place. Without
+        // this explicit config AGP silently generated a fresh random debug key
+        // on every CI run (each APK then needed a full uninstall + re-pair).
+        create("stableDebug") {
+            storeFile = file("${System.getProperty("user.home")}/.android/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildFeatures {
@@ -22,6 +36,9 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+        }
+        debug {
+            signingConfig = signingConfigs.getByName("stableDebug")
         }
     }
 
